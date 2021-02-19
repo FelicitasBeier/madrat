@@ -17,11 +17,12 @@
 #' is 1 this means that the same transformation matrix is applied for all years
 #' and/or all data columns. In the case that a column should be just summed up
 #' instead of being calculated as a weighted average you either do not provide
-#' any weight (than all columns are just summed up) or your set this specific
+#' any weight (then all columns are just summed up) or your set this specific
 #' weighting column to NA and mixed_aggregation to TRUE.
 #' 
 #' @param x magclass object that should be (dis-)aggregated
-#' @param rel relation matrix, mapping or csv file containing a mapping.
+#' @param rel relation matrix, mapping or file containing a mapping in a format
+#' supported by \code{\link{toolGetMapping}} (currently csv, rds or rda).
 #' A mapping object should contain 2 columns in which each element of x
 #' is mapped to the category it should belong to after (dis-)aggregation
 #' @param weight magclass object containing weights which should be considered
@@ -41,7 +42,7 @@
 #' (1=spatial,2=temporal,3=data) or if you want to specify a sub dimension
 #' specified by name of that dimension or position within the given dimension
 #' (e.g. 3.2 means the 2nd data dimension, 3.8 means the 8th data dimension).
-#' @param wdim Specifying the according weight dimension as choosen with dim
+#' @param wdim Specifying the according weight dimension as chosen with dim
 #' for the aggregation object. If set to NULL the function will try to
 #' automatically detect the dimension.
 #' @param partrel If set to TRUE allows that the relation matrix does contain
@@ -58,11 +59,11 @@
 #' @return the aggregated data in magclass format
 #' @author Jan Philipp Dietrich, Ulrich Kreidenweis
 #' @export
-#' @importFrom magclass wrap ndata fulldim clean_magpie mselect setCells getCells mbind setComment getNames getNames<- 
+#' @importFrom magclass wrap ndata fulldim clean_magpie mselect setCells getCells mbind setComment getNames getNames<- as.array
 #' @importFrom magclass is.magpie getComment getComment<- dimCode getYears getYears<- getRegionList as.magpie getItems collapseNames 
 #' @importFrom magclass updateMetadata withMetadata getDim getSets getSets<-
 #' @importFrom utils object.size
-#' @importFrom spam diag.spam as.matrix
+#' @importFrom Matrix Matrix t rowSums
 #' @seealso \code{\link{calcOutput}}
 #' @examples
 #' 
@@ -90,7 +91,7 @@ toolAggregate <- function(x, rel, weight=NULL, from=NULL, to=NULL, dim=1, wdim=N
     else  calcHistory <- paste0("toolAggregate(x=unknown, rel=unknown, dim=",dim,", mixed_aggregation=",mixed_aggregation,")")
   } else  calcHistory <- "copy"
   
-  if(!is.numeric(rel) & !("spam" %in% class(rel))) {
+  if(!is.numeric(rel) & !("dgCMatrix" %in% class(rel))) {
     .getAggregationMatrix <- function(rel,from=NULL,to=NULL,items=NULL,partrel=FALSE) {
       
       if("tbl" %in% class(rel)){
@@ -98,7 +99,7 @@ toolAggregate <- function(x, rel, weight=NULL, from=NULL, to=NULL, dim=1, wdim=N
       }
       if(!(is.matrix(rel) | is.data.frame(rel))) {
         if(!file.exists(rel)) stop("Cannot find given region mapping file!")
-        rel <- read.csv(rel, as.is = TRUE, sep = ";")     
+        rel <- toolGetMapping(rel, where="local")
       }
       if(is.matrix(rel)) rel <- as.data.frame(rel)
       
@@ -121,9 +122,9 @@ toolAggregate <- function(x, rel, weight=NULL, from=NULL, to=NULL, dim=1, wdim=N
         }
       }
       
-      regions <- unique(rel[,to])
-      countries <- unique(rel[,from])
-      m <- matrix(data=0, nrow=length(regions),ncol=length(countries),dimnames=list(regions=regions,countries=countries))
+      regions <- as.character(unique(rel[,to]))
+      countries <- as.character(unique(rel[,from]))
+      m <- Matrix(data=0, nrow=length(regions),ncol=length(countries),dimnames=list(regions=regions,countries=countries))
       m[cbind(match(rel[,to],rownames(m)),match(rel[,from],colnames(m)))] <- 1
       if(is.numeric(to)) to <- dimnames(rel)[[2]][to]
       if(is.numeric(from)) from <- dimnames(rel)[[2]][from]
@@ -152,7 +153,7 @@ toolAggregate <- function(x, rel, weight=NULL, from=NULL, to=NULL, dim=1, wdim=N
     datnames <-  getItems(x,dim)
     
     common <- intersect(datnames, colnames(rel))
-    if(length(common)==0) stop("The relation matrix consited of no entry that could be used for aggregation")
+    if(length(common)==0) stop("The relation matrix does not contain any entries that could be used for aggregation")
     if(floor(dim)==1) x <- x[common,,]
     if(floor(dim)==2) x <- x[,common,]
     if(floor(dim)==3) x <- x[,,common]
@@ -161,8 +162,8 @@ toolAggregate <- function(x, rel, weight=NULL, from=NULL, to=NULL, dim=1, wdim=N
     noagg <- datnames[!datnames %in% colnames(rel)]
     if(length(noagg)>1) vcat(verbosity, "The following entries were not aggregated because there was no respective entry in the relation matrix", noagg, "\n")
     
-    rel <- rel[,common]
-    rel <- subset(rel, subset=rowSums(rel)>0)
+    rel <- rel[,common,drop=FALSE]
+    rel <- rel[rowSums(rel)>0,,drop=FALSE]
   }
 
   if(!is.null(weight)) {
@@ -225,6 +226,9 @@ toolAggregate <- function(x, rel, weight=NULL, from=NULL, to=NULL, dim=1, wdim=N
     return(updateMetadata(out,x,unit="copy",calcHistory=calcHistory))
   }  else {
     
+    #convert rel for better performance
+    rel <- Matrix(rel)
+    
     #make sure that rel and weight cover a whole dimension (not only a subdimension)
     #expand data if necessary
     #set dim to main dimension afterwards
@@ -255,20 +259,21 @@ toolAggregate <- function(x, rel, weight=NULL, from=NULL, to=NULL, dim=1, wdim=N
           
         tmp <- unique(sub(search,"\\1#|TBR|#\\3",names)) 
         additions <- strsplit(tmp,split="#|TBR|#",fixed=TRUE)
-        cnames <- NULL
-        rnames <- NULL
-        for(i in 1:length(additions)) {
-          if(is.na(additions[[i]][2])) additions[[i]][2] <- ""
-          cnames <- c(cnames,paste0(additions[[i]][1],colnames(rel),additions[[i]][2]))
-          rnames <- c(rnames,paste0(additions[[i]][1],rownames(rel),additions[[i]][2]))
-        }
+        add <- sapply(additions, function(x) return(x[1:2]))
+        add[is.na(add)] <- ""
+        .tmp <- function(add,fill) return(paste0(rep(add[1,],each=length(fill)),
+                                                 fill,
+                                                 rep(add[2,],each=length(fill))))
         
-        new_rel <- matrix(0,nrow=length(rnames),ncol=length(cnames),dimnames=list(rnames,cnames))
+        cnames <- .tmp(add,colnames(rel))
+        rnames <- .tmp(add,rownames(rel))
+        
+        new_rel <- Matrix(0,nrow=length(rnames),ncol=length(cnames),dimnames=list(rnames,cnames))
         
         for(i in 1:length(additions)) {
           new_rel[1:nrow(rel)+(i-1)*nrow(rel),1:ncol(rel)+(i-1)*ncol(rel)] <- rel
         }
-        return(new_rel[,names])
+        return(new_rel[,names,drop=FALSE])
       }
       rel <- .expand_rel(rel,getItems(x,round(floor(dim))),dim)
       dim <- round(floor(dim))
@@ -290,30 +295,40 @@ toolAggregate <- function(x, rel, weight=NULL, from=NULL, to=NULL, dim=1, wdim=N
     }
     
     #Aggregate data
-    matrix_multiplication <- function(y,x) {
-      if(any(is.infinite(y))) {
-        #Special Inf treatment to prevent that a single Inf in x
-        #is setting the full output to NaN (because 0*Inf is NaN)
-        #Infs are now treated in a way that anything except 0 times Inf
-        #leads to NaN, but 0 times Inf leads to NaN
-        for(i in c(-Inf,Inf)) {
-          j <- (is.infinite(y) & (y == i))
-          x[,j][x[,j]!=0] <- i
-          y[j] <- 1
+    if(anyNA(x) || any(is.infinite(x))) { 
+      matrix_multiplication <- function(y,x) {
+        if(any(is.infinite(y))) {
+          #Special Inf treatment to prevent that a single Inf in x
+          #is setting the full output to NaN (because 0*Inf is NaN)
+          #Infs are now treated in a way that anything except 0 times Inf
+          #leads to NaN, but 0 times Inf leads to NaN
+          for(i in c(-Inf,Inf)) {
+            j <- (is.infinite(y) & (y == i))
+            x[,j][x[,j]!=0] <- i
+            y[j] <- 1
+          }
         }
+        if(any(is.na(y))) {
+          #Special NA treatment to prevent that a single NA in x
+          #is setting the full output to NA (because 0*NA is NA)
+          #NAs are now treated in a way that anything except 0 times NA
+          #leads to NA, but 0 times NA leads to 0
+          x[,is.na(y)][x[,is.na(y)]!=0] <- NA
+          y[is.na(y)] <- 0
+        }
+        return(as.array(x%*%y))
       }
-      if(any(is.na(y))) {
-        #Special NA treatment to prevent that a single NA in x
-        #is setting the full output to NA (because 0*NA is NA)
-        #NAs are now treated in a way that anything except 0 times NA
-        #leads to NA, but 0 times NA leads to 0
-        x[,is.na(y)][x[,is.na(y)]!=0] <- NA
-        y[is.na(y)] <- 0
-      }
-      return(x%*%y)   
+      out <- apply(x, which(1:3!=dim),matrix_multiplication,rel)
+      if(length(dim(out))==2) out <- array(out,dim=c(1,dim(out)),dimnames=c("",dimnames(out)))
+    } else {
+      optMatprod <- getOption("matprod")
+      on.exit(options(matprod = optMatprod))
+      options(matprod = "blas")
+      notdim <- setdiff(1:3,dim)
+      out <- rel %*% as.array(wrap(x,list(dim,notdim)))
+      out <- array(out,dim=c(dim(rel)[1],dim(x)[notdim]))
+      dimnames(out)[2:3] <- dimnames(x)[notdim]
     }
-    out <- apply(x, which(1:3!=dim),matrix_multiplication,rel)
-    if(length(dim(out))==2) out <- array(out,dim=c(1,dim(out)),dimnames=c("",dimnames(out)))
     
     #Write dimnames of aggregated dimension
     if(!is.null(rownames(rel))) {

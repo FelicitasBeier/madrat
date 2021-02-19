@@ -42,10 +42,10 @@ readSource <- function(type,subtype=NULL,convert=TRUE) {
   if(!file.exists(getConfig("cachefolder")) & getConfig("enablecache")) dir.create(getConfig("cachefolder"),recursive = TRUE)
   
   # Does the source that should be read exist?
-  if(!(type%in%getSources())) stop('Type "',type, '" is not a valid source type. Available sources are: "',paste(getSources(),collapse='", "'),'"')
+  if(!(type %in% getSources(type="read"))) stop('Type "',type, '" is not a valid source type. Available sources are: "',paste(getSources(type="read"),collapse='", "'),'"')
   
   # Does a correctTYPE function exist?
-  if(convert=="onlycorrect" & !(type %in% getSources("correct"))) {
+  if(convert=="onlycorrect" & !(type %in% getSources(type="correct"))) {
     warning("No correct function for ",type," could be found. Set convert to FALSE.")
     convert <- FALSE
   }
@@ -63,8 +63,8 @@ readSource <- function(type,subtype=NULL,convert=TRUE) {
   
   .getData <- function(type,subtype,prefix="read") {
     # get data either from cache or by calculating it from source
-    sourcefolder <- paste0(getConfig("sourcefolder"),"/",type)
-    if(!is.null(subtype) && file.exists(paste0(sourcefolder,"/",subtype,"/DOWNLOAD.yml"))) sourcefolder <- paste0(sourcefolder,"/",subtype)
+    sourcefolder <- paste0(getConfig("sourcefolder"),"/",make.names(type))
+    if(!is.null(subtype) && file.exists(paste0(sourcefolder,"/",make.names(subtype),"/DOWNLOAD.yml"))) sourcefolder <- paste0(sourcefolder,"/",make.names(subtype))
     if(!file.exists(sourcefolder)) stop('Source folder "',sourcefolder,'" for source "',type,'" cannot be found! Please set a proper path with "setConfig"!')  
 
     fname <- paste0(prefix,type,subtype)
@@ -136,7 +136,7 @@ readSource <- function(type,subtype=NULL,convert=TRUE) {
       x <- .getData(type,subtype,"read")
       id <-  paste(attr(x,"id"),fname,sep="|")
     } else if(prefix=="convert") {
-      if(type %in% getSources("correct")) {    
+      if(type %in% getSources(type="correct")) {    
         x <- .getData(type,subtype,"correct")
       } else {
         x <- .getData(type,subtype,"read")
@@ -156,7 +156,7 @@ readSource <- function(type,subtype=NULL,convert=TRUE) {
       testISO(getRegions(x),functionname=functionname)
     }
     vcat(2," - saving data to", cachefile_new, fill=300, show_prefix=FALSE)
-    getComment(x) <- fp
+    getComment(x) <- .fp(sourcefolder, type, prefix)
     saveRDS(x, cachefile_new, compress = getConfig("cachecompression"))
     Sys.chmod(cachefile_new,"0666", use_umask=FALSE)
     attr(x,"id") <- id
@@ -171,14 +171,14 @@ readSource <- function(type,subtype=NULL,convert=TRUE) {
   if(length(df)==0) {
     source_missing <- !file.exists(sourcefolder)
   } else {
-    sourcefile <- paste0(getConfig("sourcefolder"),"/",type,"/DOWNLOAD.yml")
-    sourcesubfile <- paste0(getConfig("sourcefolder"),"/",type,"/",subtype,"/DOWNLOAD.yml")
+    sourcefile <- paste0(getConfig("sourcefolder"),"/",make.names(type),"/DOWNLOAD.yml")
+    sourcesubfile <- paste0(getConfig("sourcefolder"),"/",make.names(type),"/",make.names(subtype),"/DOWNLOAD.yml")
     source_missing <- (!file.exists(sourcefile) && !file.exists(sourcesubfile))
   }
   
   if(source_missing) {
     # does a routine exist to download the source data?
-    if(type %in% getSources("download")) {
+    if(type %in% getSources(type="download")) {
       downloadSource(type, subtype=subtype)
     } else {
       typesubtype <- paste0(paste(c(paste0("type = \"",type),subtype),collapse="\" subtype = \""),"\"")
@@ -188,9 +188,9 @@ readSource <- function(type,subtype=NULL,convert=TRUE) {
   
   if(!is.logical(convert) && convert!="onlycorrect") stop("Unknown convert setting \"",convert,"\" (allowed: TRUE, FALSE and \"onlycorrect\") ")
         
-  if(convert==TRUE & (type %in% getSources("regional"))) {
+  if(convert==TRUE && (type %in% getSources(type="convert"))) {
     prefix <- "convert"
-  } else if (convert %in% c(TRUE, "onlycorrect") & (type %in% getSources("correct"))) {
+  } else if (convert %in% c(TRUE, "onlycorrect") && (type %in% getSources(type="correct"))) {
     prefix <- "correct"
   } else {
     prefix <- "read"

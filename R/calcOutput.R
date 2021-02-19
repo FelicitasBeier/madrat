@@ -35,6 +35,9 @@
 #' \item \bold{unit} - unit of the provided data
 #' \item \bold{description} - a short description of the data
 #' \item \bold{note} (optional) - additional notes related to the data
+#' \item \bold{class} (optional | default = "magpie") - Class of the returned object. If set to
+#' something other than "magpie" most functionality, such as aggregation or unit tests will not
+#' be available and is switched off!
 #' \item \bold{isocountries} (optional | default = TRUE (mostly) or FALSE (if global)) - a boolean
 #' indicating whether data is in iso countries or not (the latter will deactivate several 
 #' features such as aggregation)
@@ -82,24 +85,34 @@
 calcOutput <- function(type,aggregate=TRUE,file=NULL,years=NULL,round=NULL,supplementary=FALSE, append=FALSE, na_warning=TRUE, try=FALSE, ...) {
  
   # read region mappings check settings for aggregate
-  rel <- list()
-  rel_names <- NULL
-  for(r in c(getConfig("regionmapping"),getConfig("extramappings"))) {
-    rel[[r]] <- read.csv(toolMappingFile("regional",r), as.is = TRUE, sep = ";")
-    # rename column names from old to new convention, if necessary
-    if(any(names(rel[[r]])=="CountryCode")) names(rel[[r]])[names(rel[[r]])=="CountryCode"] <- "country"
-    if(any(names(rel[[r]])=="RegionCode")) names(rel[[r]])[names(rel[[r]])=="RegionCode"] <- "region"
-    if(is.null(rel[[r]]$global)) rel[[r]]$global <- "GLO"  # add global column
-    rel_names <- union(rel_names,names(rel[[r]]))
-  }     
+  if (aggregate!=FALSE) {
+    rel <- list()
+    rel_names <- NULL
+    for(r in c(getConfig("regionmapping"),getConfig("extramappings"))) {
+      rel[[r]] <- toolGetMapping(r, type="regional", activecalc=type)
+      # rename column names from old to new convention, if necessary
+      if(any(names(rel[[r]])=="CountryCode")) names(rel[[r]])[names(rel[[r]])=="CountryCode"] <- "country"
+      if(any(names(rel[[r]])=="RegionCode")) names(rel[[r]])[names(rel[[r]])=="RegionCode"] <- "region"
+      if(is.null(rel[[r]]$global)) rel[[r]]$global <- "GLO"  # add global column
+      rel_names <- union(rel_names,names(rel[[r]]))
+    }
+  }
   
   if(!is.logical(aggregate)) {
     # rename aggregate arguments from old to new convention, if necessary
     if(toupper(aggregate)=="GLO") aggregate <- "global"
     if(toupper(gsub("+","",aggregate,fixed = TRUE))=="REGGLO") aggregate <- "region+global"
-    if(!all(strsplit(aggregate,"+",fixed=TRUE)[[1]] %in% rel_names)) {
-      stop("Illegal setting aggregate = ",aggregate,"! Make sure that all arguments 
-            which should be passed to the specific calc function are given with its name (e.g. arg=BLA)")
+    
+    # Ignore columns in 'aggregate' that are not defined in one of the mappings. 
+    # Stop if 'aggregate' contains none of the columns defined in one of the mappings.
+    aggregate_splitted <- strsplit(aggregate,"+",fixed=TRUE)[[1]]
+    common_columns <- aggregate_splitted %in% rel_names
+    if(all(!common_columns)) {
+      stop("None of the columns given in aggregate = ",aggregate," could be found in the mappings!")
+    } else {
+      if(any(!common_columns)) vcat(verbosity = 0,'Omitting ',aggregate_splitted[!common_columns],' from aggregate = ',aggregate,' because it does not exists in the mappings.')
+      # Use those columns only for aggregation that exist in either of the mappings
+      aggregate <- paste0(aggregate_splitted[common_columns],collapse = "+")
     }
   }
   
@@ -133,6 +146,8 @@ calcOutput <- function(type,aggregate=TRUE,file=NULL,years=NULL,round=NULL,suppl
     tmppath_read <- tmppath
     rds <- TRUE
   }
+  if(!file.exists(tmppath_read)) vcat(2, paste0(" - Cache file ",fname,".rds does not exist"), show_prefix=FALSE)
+  
   cache_failed <- FALSE
   repeat {
     if(!cache_failed && ((all(getConfig("forcecache")==TRUE) || fname %in% getConfig("forcecache") || type %in% getConfig("forcecache")) && !(type %in% getConfig("ignorecache"))) && !(fname %in% getConfig("ignorecache")) && file.exists(tmppath_read) ) {
@@ -161,7 +176,11 @@ calcOutput <- function(type,aggregate=TRUE,file=NULL,years=NULL,round=NULL,suppl
         x <- eval(parse(text=functionname))
       }
       if(!is.list(x)) stop("Output of function \"",functionname,"\" is not list of two MAgPIE objects containing the values and corresponding weights!")
-      if(!is.magpie(x$x)) stop("Output x of function \"",functionname,"\" is not a MAgPIE object!")
+      if(is.null(x$class)) x$class <- "magpie"
+      if(!is.character(x$class) || length(x$class)!=1) stop("x$class must be a single element of class character or NULL!")
+      if(x$class=="magpie" && !is.magpie(x$x)) stop("Output x of function \"",functionname,"\" is not a MAgPIE object!")
+      if(!(x$class %in% class(x$x))) stop("Output x of function \"",functionname,"\" is not of promised class \"",x$class,"\"!")
+      if(x$class!="magpie" && !is.null(x$weight)) stop("Weights are currently not supported for objects of class \"",x$class,"\"!")
       if(!is.magpie(x$weight) && !is.null(x$weight)) stop("Output weight of function \"",functionname,"\" is not a MAgPIE object!")
       if(!is.null(x$weight)) {
         if(nyears(x$x)!=nyears(x$weight) && nyears(x$weight)!=1) stop("Number of years disagree between data and weight of function \"",functionname,"\"!")
@@ -175,9 +194,15 @@ calcOutput <- function(type,aggregate=TRUE,file=NULL,years=NULL,round=NULL,suppl
     }  
   }
   
+  #make sure that x$class is defined
+  if(is.null(x$class)) x$class <- "magpie"
   
   # read and check x$isocountries value which describes whether the data is in
   # iso country resolution or not (affects aggregation and certain checks)
+  if(x$class!="magpie") {
+    if(!is.null(x$isocountries) && x$isocountries!=FALSE) stop("x$isocountries can only be set if x$class==\"magpie\"")
+    x$isocountries <- FALSE
+  }
   if(is.null(x$isocountries)) {
     if(nregions(x$x)==1 && getRegions(x$x)=="GLO") {
       x$isocountries <- FALSE 
@@ -211,9 +236,11 @@ calcOutput <- function(type,aggregate=TRUE,file=NULL,years=NULL,round=NULL,suppl
   }  
   
   #perform additional checks
+  if(x$class!="magpie" && (!is.null(x$min) | !is.null(x$max))) stop("Min/Max checks cannot be used in combination with x$class!=\"magpie\"")
   if(!is.null(x$min) && any(x$x<x$min, na.rm = TRUE)) vcat(0,"Data returned by ", functionname," contains values smaller than the predefined minimum (min = ",x$min,")")
   if(!is.null(x$max) && any(x$x>x$max, na.rm = TRUE)) vcat(0,"Data returned by ", functionname," contains values greater than the predefined maximum (max = ",x$max,")")
-  checkNameStructure <- function(x,structure,dim) {
+  checkNameStructure <- function(x,structure,dim,class) {
+    if(class!="magpie" && !is.null(structure)) stop("Structure checks cannot be used in combination with x$class!=\"magpie\"")
     if(!is.null(structure)) {
       if(is.null(getItems(x,dim))) {
         vcat(0, paste('Missing names in dimension',dim,'!'))
@@ -223,14 +250,17 @@ calcOutput <- function(type,aggregate=TRUE,file=NULL,years=NULL,round=NULL,suppl
       }
     }
   }
-  checkNameStructure(x$x,x$structure.spatial,1)
-  checkNameStructure(x$x,x$structure.temporal,2)
-  checkNameStructure(x$x,x$structure.data,3)
+  checkNameStructure(x$x, x$structure.spatial , 1, x$class)
+  checkNameStructure(x$x, x$structure.temporal, 2, x$class)
+  checkNameStructure(x$x, x$structure.data    , 3, x$class)
   
-  if(na_warning) if(anyNA(x$x)) vcat(0,"Data returned by ", functionname," contains NAs")
-  if(any(is.infinite(x$x))) vcat(0,"Data returned by ", functionname," contains infinite values")
+  if(x$class=="magpie") {
+    if(na_warning) if(anyNA(x$x)) vcat(0,"Data returned by ", functionname," contains NAs")
+    if(any(is.infinite(x$x))) vcat(0,"Data returned by ", functionname," contains infinite values")
+  }
   
   if(!is.null(years)){
+    if(x$class!="magpie") stop("years argument can only be used in combination with x$class=\"magpie\"!")
     #check that years exist in provided data
     if(!all(as.integer(sub("y","",years)) %in% getYears(x$x,as.integer=TRUE))) stop("Some years are missing in the data provided by function ",functionname,"(", paste(years[!(as.integer(sub("y","",years))%in%getYears(x$x,as.integer=TRUE))],collapse=", "),")!")
     x$x <- x$x[,years,]
@@ -252,15 +282,16 @@ calcOutput <- function(type,aggregate=TRUE,file=NULL,years=NULL,round=NULL,suppl
     return(x)
   }
   
-  unit <- .prep_comment(x$unit,"unit",paste0('Missing unit information for data set "',type,'"!'))
+  unit        <- .prep_comment(x$unit,"unit",paste0('Missing unit information for data set "',type,'"!'))
   description <- .prep_comment(x$description,"description",paste0('Missing description for data set "',type,'"! Please add a description in the corresponding calc function!'))
-  comment <- .prep_comment(getComment(x$x),"comment")
-  origin <- .prep_comment(paste0(gsub("\\s{2,}"," ",paste(deparse(match.call()),collapse=""))," (madrat ",packageDescription("madrat")$Version," | ",x$package,")"),"origin")
-  date <- .prep_comment(date(),"creation date")
-  note <- .prep_comment(x$note,"note")
+  comment     <- .prep_comment(getComment(x$x),"comment")
+  origin      <- .prep_comment(paste0(gsub("\\s{2,}"," ",paste(deparse(match.call()),collapse=""))," (madrat ",packageDescription("madrat")$Version," | ",x$package,")"),"origin")
+  date        <- .prep_comment(date(),"creation date")
+  note        <- .prep_comment(x$note,"note")
   
   # select fitting relation mapping
   if(aggregate!=FALSE) {
+    if(x$class!="magpie") stop("Aggregation can only be used in combination with x$class=\"magpie\"!")
     items <- getItems(x$x,dim=1)
     rel_fitting <- which(sapply(rel,nrow) == length(items))
     if(length(rel_fitting)==0) stop("Neither getConfig(\"regionmapping\") nor getConfig(\"extramappings\") contain a mapping compatible to the provided data!")
@@ -290,38 +321,50 @@ calcOutput <- function(type,aggregate=TRUE,file=NULL,years=NULL,round=NULL,suppl
     x$aggregationArguments$rel <- quote(rel)
     if(aggregate!=TRUE) x$aggregationArguments$to <- aggregate
     x$x <- do.call(x$aggregationFunction,x$aggregationArguments)
+    x$x <- toolOrderCells(x$x)
   } 
   
   if(!is.null(years)) {
     if(length(years)==1) getYears(x$x) <- NULL
   }
   if(!is.null(round)) {
+    if(x$class!="magpie") stop("rounding can only be used in combination with x$class=\"magpie\"!")
     x$x <- round(x$x,round)
   }
-
-  getComment(x$x) <- c(description,
-                       unit,
-                       note,
-                       comment,
-                       origin,
-                       date)
-  x$x<-clean_magpie(x$x)
-  x$x<-updateMetadata(x$x,unit=x$unit,source=x$source,calcHistory="update",description=x$description,note=x$note,cH_priority=1)
-
+  
+  extended_comment <- c(description,
+                        unit,
+                        note,
+                        comment,
+                        origin,
+                        date) 
+  if(x$class=="magpie") {
+    getComment(x$x) <- extended_comment
+    x$x <- clean_magpie(x$x)
+    x$x <- updateMetadata(x$x,unit=x$unit,source=x$source,calcHistory="update",description=x$description,note=x$note,cH_priority=1)
+  } else {
+    attr(x$x,"comment") <- extended_comment
+  }
+    
   if(is.null(file) & append){
     vcat(0,"The parameter append=TRUE works only when the file name is provided in the calcOutput() function call.")
   }
   
   if(!is.null(file)) {
     if(!file.exists(getConfig("outputfolder"))) stop('Outputfolder "',getConfig("outputfolder"),'" does not exist!')
-    if(grepl(".mif",file)==TRUE){
-      if(!is.null(getYears(x$x))) { 
-        write.report2(x$x,file=paste(getConfig("outputfolder"),file,sep="/"), unit=x$unit, append=append)
+    if(x$class=="magpie") {
+      if(grepl(".mif",file)==TRUE){
+        if(!is.null(getYears(x$x))) { 
+          write.report2(x$x,file=paste(getConfig("outputfolder"),file,sep="/"), unit=x$unit, append=append)
+        } else {
+          vcat(0,"Time dimension missing and data cannot be written to a mif-file. Skip data set!")
+        }
       } else {
-        vcat(0,"Time dimension missing and data cannot be written to a mif-file. Skip data set!")
+        write.magpie(x$x,file_folder=getConfig("outputfolder"),file_name=file, mode="777")
       }
     } else {
-      write.magpie(x$x,file_folder=getConfig("outputfolder"),file_name=file, mode="777")
+      if((grepl(".rds$",file)==TRUE)) saveRDS(x$x,paste(getConfig("outputfolder"),file,sep="/"))
+      else stop("Unsupported file format (\"",file,"\") for x$class!=\"magpie\"")
     }
   }
   if(supplementary) {

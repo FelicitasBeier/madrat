@@ -11,9 +11,10 @@ test_that("readSource detects common problems", {
   readNoDownload <- function(){}
   globalassign("readNoDownload")
   expect_error(readSource("NoDownload"), "no download script")
-  expect_error(readSource("Tau", subtype="historical", convert="WTF"), "Unknown convert setting")
   
-  downloadTest <- function()return(1)
+  downloadTest <- function(){
+    return(list(url="dummy", author="dummy", title="dummy", license="dummy"))
+  }
   readTest <- function()return(1)
   globalassign("downloadTest", "readTest")
   expect_error(readSource("Test"), "not a MAgPIE object")
@@ -32,5 +33,8 @@ test_that("readSource detects common problems", {
   
   expect_error(readSource(TRUE),"Invalid type")
   expect_error(readSource("NonAvailable"), "not a valid source")
+  
+  skip_if_offline()
+  expect_error(readSource("Tau", subtype="historical", convert="WTF"), "Unknown convert setting")
 })
 
